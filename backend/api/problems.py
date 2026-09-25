@@ -7,6 +7,7 @@ from backend import config
 from backend.api import ok, err, require_auth, require_admin
 from backend.storage import read_json, atomic_write_json, list_files
 from backend.utils import now_iso, gen_id, sort_list
+from backend.judge import subtasks as subtask_mod
 
 problems_bp = Blueprint("problems", __name__)
 
@@ -20,11 +21,33 @@ def load_testcases(problem_id):
     return (data or {}).get("cases", []) if data else []
 
 
+def load_subtasks(problem_id):
+    data = read_json(_testcases_path(problem_id))
+    cfg = (data or {}).get("subtasks", []) if data else []
+    return cfg if subtask_mod.is_enabled(cfg) else []
+
+
+def _public_subtasks(problem_id):
+    """对外展示的子任务摘要（不含测试数据，仅分值结构）。"""
+    return [
+        {
+            "id": st.get("id"),
+            "name": st.get("name"),
+            "points": int(st.get("points", 0)),
+            "case_count": len(st.get("case_ids") or []),
+        }
+        for st in load_subtasks(problem_id)
+    ]
+
+
 def _problem_summary(p, include_samples=True):
     if not p:
         return None
     out = {k: v for k, v in p.items()}
     out["testcase_count"] = len(load_testcases(p.get("id")))
+    pub_subtasks = _public_subtasks(p.get("id"))
+    if pub_subtasks:
+        out["subtasks"] = pub_subtasks
     if not include_samples:
         out.pop("samples", None)
     return out
@@ -80,6 +103,14 @@ def create_problem():
     title = (data.get("title") or "").strip()
     if not title:
         return err("题目标题不能为空", 400)
+    if data.get("cases") is not None:
+        # 写盘前先校验子任务配置，避免题目已创建却因配置非法留下半成品
+        try:
+            normalized = _normalize_cases(data.get("cases", []))
+            subtask_mod.normalize_subtasks(data.get("subtasks"),
+                                           [c["id"] for c in normalized])
+        except subtask_mod.SubtaskConfigError as e:
+            return err(str(e), 400)
     problem_id = data.get("id") or gen_id("p")
     problem = {
         "id": problem_id,
@@ -102,21 +133,47 @@ def create_problem():
     }
     atomic_write_json(os.path.join(config.PROBLEMS_DIR, f"{problem_id}.json"), problem)
     if data.get("cases") is not None:
-        _save_testcases(problem_id, data.get("cases", []))
+        try:
+            _save_testcases(problem_id, data.get("cases", []), data.get("subtasks"))
+        except subtask_mod.SubtaskConfigError as e:
+            return err(str(e), 400)
     return ok(_problem_summary(problem))
 
 
-def _save_testcases(problem_id, cases):
+def _normalize_cases(cases):
+    if not isinstance(cases, (list, tuple)):
+        raise subtask_mod.SubtaskConfigError("测试用例格式不正确，应为数组")
     normalized = []
     for i, c in enumerate(cases):
+        if not isinstance(c, dict):
+            raise subtask_mod.SubtaskConfigError(f"第 {i + 1} 个测试点格式不正确")
+        try:
+            points = int(c.get("points", 0))
+        except (TypeError, ValueError):
+            raise subtask_mod.SubtaskConfigError(f"第 {i + 1} 个测试点分值必须是整数")
         normalized.append({
             "id": c.get("id", i + 1),
             "input": c.get("input", ""),
             "output": c.get("output", ""),
-            "points": int(c.get("points", 0)),
+            "points": points,
         })
-    atomic_write_json(_testcases_path(problem_id),
-                      {"problem_id": problem_id, "cases": normalized})
+    return normalized
+
+
+def _save_testcases(problem_id, cases, raw_subtasks=None):
+    """保存测试点及可选的子任务配置。
+
+    子任务配置非法时抛出 subtask_mod.SubtaskConfigError（API 层转 400）。
+    启用子任务时，同步把题目 points 对齐为「子任务分值 + 散点分值」之和，
+    保证题目页与排行榜的总分口径一致。
+    """
+    normalized = _normalize_cases(cases)
+    subtask_cfg = subtask_mod.normalize_subtasks(raw_subtasks,
+                                                 [c["id"] for c in normalized])
+    doc = {"problem_id": problem_id, "cases": normalized}
+    if subtask_cfg:
+        doc["subtasks"] = subtask_cfg
+    atomic_write_json(_testcases_path(problem_id), doc)
     # 同步题目中的测试点数量与样例（若未提供样例则取前若干组）
     prob_path = os.path.join(config.PROBLEMS_DIR, f"{problem_id}.json")
     p = read_json(prob_path)
@@ -124,6 +181,10 @@ def _save_testcases(problem_id, cases):
         if not p.get("samples") and normalized:
             p["samples"] = [{"input": c["input"][:2000], "output": c["output"][:2000]}
                             for c in normalized[:3]]
+        if subtask_cfg:
+            grouped = subtask_mod.grouped_case_ids(subtask_cfg)
+            loose_points = sum(c["points"] for c in normalized if c["id"] not in grouped)
+            p["points"] = sum(int(st["points"]) for st in subtask_cfg) + loose_points
         p["updated_at"] = now_iso()
         atomic_write_json(prob_path, p)
 
@@ -150,7 +211,10 @@ def update_problem(problem_id):
     p["updated_at"] = now_iso()
     atomic_write_json(os.path.join(config.PROBLEMS_DIR, f"{problem_id}.json"), p)
     if data.get("cases") is not None:
-        _save_testcases(problem_id, data.get("cases", []))
+        try:
+            _save_testcases(problem_id, data.get("cases", []), data.get("subtasks"))
+        except subtask_mod.SubtaskConfigError as e:
+            return err(str(e), 400)
     return ok(_problem_summary(p))
 
 
@@ -170,12 +234,18 @@ def delete_problem(problem_id):
 @problems_bp.get("/problems/<problem_id>/testcases")
 @require_admin
 def get_testcases(problem_id):
-    return ok({"problem_id": problem_id, "cases": load_testcases(problem_id)})
+    data = read_json(_testcases_path(problem_id)) or {}
+    return ok({"problem_id": problem_id,
+               "cases": data.get("cases", []),
+               "subtasks": data.get("subtasks", [])})
 
 
 @problems_bp.put("/problems/<problem_id>/testcases")
 @require_admin
 def set_testcases(problem_id):
     data = request.get_json(silent=True) or {}
-    _save_testcases(problem_id, data.get("cases", []))
+    try:
+        _save_testcases(problem_id, data.get("cases", []), data.get("subtasks"))
+    except subtask_mod.SubtaskConfigError as e:
+        return err(str(e), 400)
     return ok({"problem_id": problem_id, "count": len(data.get("cases", []))})

@@ -63,12 +63,8 @@
     <div class="card hidden" id="resultCard">
       <div class="card-title">评测结果 <span id="resultBadge"></span></div>
       <div class="stat-grid" id="resultStats"></div>
-      <div class="table-wrap mt-8">
-        <table>
-          <thead><tr><th>测试点</th><th class="text-center">结果</th><th class="text-center">得分</th><th class="text-center">时间</th><th class="text-center">内存</th><th>信息</th></tr></thead>
-          <tbody id="resultDetails"></tbody>
-        </table>
-      </div>
+      <div id="resultSubtasks"></div>
+      <div id="resultDetailsWrap"></div>
       <div id="compileMsg" class="mt-8"></div>
     </div>
   </div>
@@ -209,17 +205,17 @@
         <div class="stat-card"><div class="val">${OJ_.fmtDuration(s.time_ms)}</div><div class="lbl">耗时</div></div>
         <div class="stat-card"><div class="val">${OJ_.fmtMem(s.memory_kb)}</div><div class="lbl">内存</div></div>
         <div class="stat-card"><div class="val">${OJ_.esc(s.language || "")}</div><div class="lbl">语言</div></div>`;
-      const details = s.details || [];
-      document.getElementById("resultDetails").innerHTML = details.length
-        ? details.map(d => `<tr>
-            <td class="mono">#${d.case_id}</td>
-            <td class="text-center">${OJ_.verdictBadge(d.status)}</td>
-            <td class="text-center">${d.score}</td>
-            <td class="text-center mono">${OJ_.fmtDuration(d.time_ms)}</td>
-            <td class="text-center mono">${OJ_.fmtMem(d.memory_kb)}</td>
-            <td class="muted">${OJ_.esc(d.message || "")}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="6" class="empty">等待评测…</td></tr>`;
+      // 子任务结果（无该字段时返回空串，兼容旧提交/旧题）
+      document.getElementById("resultSubtasks").innerHTML = OJ_.renderSubtaskResults(s.subtasks);
+      // 用提交里的子任务结果建 id->名称 映射，给明细表标注每个测试点所属分组
+      const groupNames = {};
+      (s.subtasks || []).forEach(st => { groupNames[st.id] = st.name || ("子任务 " + st.id); });
+      const groupMap = {};
+      (s.details || []).forEach(d => {
+        if (d.subtask_id != null && groupNames[d.subtask_id] != null) groupMap[d.case_id] = groupNames[d.subtask_id];
+      });
+      document.getElementById("resultDetailsWrap").innerHTML =
+        OJ_.renderCaseDetails(s.details, s.subtasks && s.subtasks.length ? groupMap : null);
       const cm = document.getElementById("compileMsg");
       cm.innerHTML = s.compile_message ? `<pre class="code">${OJ_.esc(s.compile_message)}</pre>` : "";
     }

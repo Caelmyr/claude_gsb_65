@@ -24,6 +24,7 @@ from backend.sandbox import get_sandbox, ST_OK, ST_TLE, ST_MLE, ST_OLE, ST_RE, S
 from backend.judge import comparator
 from backend.judge import ranking
 from backend.judge import cheat
+from backend.judge import subtasks as subtask_mod
 
 
 def _submission_dir(contest_id):
@@ -123,6 +124,7 @@ class JudgeEngine:
             "judged_at": None,
             "compile_message": "",
             "details": [],
+            "subtasks": [],
             "similar": None,
             "ip": user.get("_ip", ""),
         }
@@ -183,6 +185,7 @@ class JudgeEngine:
             return
         problem = self._load_problem(sub["problem_id"])
         cases = self._load_testcases(sub["problem_id"])
+        subtask_cfg = self._load_subtasks(sub["problem_id"])
         contest = self._load_contest(contest_id)
 
         if problem is None:
@@ -210,6 +213,17 @@ class JudgeEngine:
         max_time = 0
         max_mem = 0
         final_status = "AC"
+        subtask_on = subtask_mod.is_enabled(subtask_cfg)
+        grouped_ids = subtask_mod.grouped_case_ids(subtask_cfg)
+        # case_id -> 所属子任务 id（用于明细标注）
+        cid_to_sid = {}
+        if subtask_on:
+            for st in subtask_cfg:
+                for c in st.get("case_ids") or []:
+                    cid_to_sid[c] = st.get("id")
+        # 子任务模式：散点分之和（子任务分组分在全部测试点跑完后汇总）；
+        # 旧模式：full_points 与最终 AC 满分逻辑保持不变
+        case_results = {}
         full_points = sum(int(c.get("points", 0)) for c in cases) or int(problem.get("points", 100))
 
         for case in cases:
@@ -232,25 +246,36 @@ class JudgeEngine:
                     case_status = "WA"
                 else:
                     case_points = int(case.get("points", 0))
+            cid = case.get("id")
+            # 归入子任务的测试点不单独计分，其得分由整组通过情况决定
+            point_awarded = case_points if (case_status == "AC" and cid not in grouped_ids) else 0
             detail = {
-                "case_id": case.get("id"),
+                "case_id": cid,
+                "subtask_id": cid_to_sid.get(cid) if subtask_on else None,
                 "status": case_status,
                 "time_ms": res["time_ms"],
                 "memory_kb": res["memory_kb"],
-                "score": case_points if case_status == "AC" else 0,
+                "score": point_awarded,
                 "message": msg,
             }
             details.append(detail)
-            total_score += case_points
+            case_results[cid] = {"status": case_status, "points": point_awarded}
+            total_score += point_awarded
             if case_status != "AC" and final_status == "AC":
                 final_status = case_status
 
-        if final_status == "AC":
+        subtask_results = []
+        if subtask_on:
+            subtask_results, subtask_total = subtask_mod.summarize(subtask_cfg, case_results)
+            total_score += subtask_total
+        elif final_status == "AC":
+            # 旧模式（无子任务）：全部通过取整题满分，兼容既有“全对/按点给分”口径
             total_score = full_points
 
         # 3) 写回
         self._finalize(sub_id, final_status, total_score, details,
-                       compile_result["message"], max_time, max_mem)
+                       compile_result["message"], max_time, max_mem,
+                       subtask_results=subtask_results)
         shutil.rmtree(workdir, ignore_errors=True)
 
         # 4) 增量更新排行榜
@@ -357,10 +382,12 @@ class JudgeEngine:
             return True, "通过（special judge）"
         return False, verdict or f"校验器异常退出码 {proc.returncode}"
 
-    def _finalize(self, sub_id, status, score, details, compile_message, time_ms, memory_kb):
+    def _finalize(self, sub_id, status, score, details, compile_message, time_ms, memory_kb,
+                  subtask_results=None):
         def _upd(s):
             s.update(
                 status=status, score=score, details=details,
+                subtasks=subtask_results or [],
                 compile_message=truncate(compile_message, 4000),
                 time_ms=time_ms, memory_kb=memory_kb, judged_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             )
@@ -373,7 +400,8 @@ class JudgeEngine:
             for s in self._recent:
                 if s["id"] == sub_id:
                     s.update(status=status, score=score, time_ms=time_ms,
-                             memory_kb=memory_kb, judged_at=now_iso(), details=details)
+                             memory_kb=memory_kb, judged_at=now_iso(), details=details,
+                             subtasks=subtask_results or [])
                     break
 
     def _anti_cheat(self, sub_id):
@@ -399,6 +427,11 @@ class JudgeEngine:
     def _load_testcases(self, problem_id):
         data = read_json(_case_dir(problem_id))
         return (data or {}).get("cases", []) if data else []
+
+    def _load_subtasks(self, problem_id):
+        data = read_json(_case_dir(problem_id))
+        cfg = (data or {}).get("subtasks", []) if data else []
+        return cfg if subtask_mod.is_enabled(cfg) else []
 
     def _load_contest(self, contest_id):
         return read_json(os.path.join(config.CONTESTS_DIR, f"{contest_id}.json"))
@@ -463,7 +496,7 @@ class JudgeEngine:
         if sub is None:
             return False
         self._update_shard(sub_id, lambda s: s.update(status="PENDING", judged_at=None,
-                                                       details=[], score=0))
+                                                       details=[], subtasks=[], score=0))
         self._executor.submit(self._judge_job, sub_id, sub["contest_id"], sub["user_id"])
         return True
 

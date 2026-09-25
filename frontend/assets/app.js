@@ -137,6 +137,58 @@
     return `<span class="diff diff-${n}">${names[n] || "困难"}</span>`;
   }
 
+  /* ---------- 子任务 / 测试点评测结果渲染 ---------- */
+  // 子任务逐项结果表（评测完成后 s.subtasks 非空时展示）
+  function renderSubtaskResults(subtasks) {
+    if (!subtasks || !subtasks.length) return "";
+    const rows = subtasks.map(st => {
+      const passed = !!st.passed;
+      const badge = passed
+        ? '<span class="badge AC">通过</span>'
+        : `<span class="badge WA">${esc(st.passed_cases || 0)}/${st.total_cases || 0}</span>`;
+      return `<tr>
+        <td class="mono muted">#${esc(st.id)}</td>
+        <td>${esc(st.name || ("子任务 " + st.id))}</td>
+        <td class="text-center">${badge}</td>
+        <td class="text-center mono">${st.score ?? 0} / ${st.points ?? 0}</td>
+      </tr>`;
+    }).join("");
+    return `<div class="table-wrap mt-8">
+      <table>
+        <thead><tr><th>子任务</th><th>名称</th><th class="text-center">是否通过</th><th class="text-center">得分 / 满分</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }
+
+  // 测试点明细表；groupMap 存在时（题配有子任务）首列展示所属分组
+  function renderCaseDetails(details, groupMap) {
+    const grouped = groupMap && Object.keys(groupMap).length;
+    const head = grouped
+      ? "<tr><th>测试点</th><th>所属分组</th><th class=\"text-center\">结果</th><th class=\"text-center\">得分</th><th class=\"text-center\">时间</th><th class=\"text-center\">内存</th><th>信息</th></tr>"
+      : "<tr><th>测试点</th><th class=\"text-center\">结果</th><th class=\"text-center\">得分</th><th class=\"text-center\">时间</th><th class=\"text-center\">内存</th><th>信息</th></tr>";
+    const body = (details || []).map(d => {
+      const group = grouped
+        ? `<td>${groupMap[d.case_id] ? '<span class="tag">' + esc(groupMap[d.case_id]) + '</span>' : '<span class="muted">散点</span>'}</td>`
+        : "";
+      return `<tr>
+        <td class="mono">#${esc(d.case_id)}</td>
+        ${group}
+        <td class="text-center">${verdictBadge(d.status)}</td>
+        <td class="text-center">${d.score ?? 0}</td>
+        <td class="text-center mono">${fmtDuration(d.time_ms)}</td>
+        <td class="text-center mono">${fmtMem(d.memory_kb)}</td>
+        <td class="muted">${esc(d.message || "")}</td>
+      </tr>`;
+    }).join("");
+    const cols = grouped ? 7 : 6;
+    return `<div class="table-wrap mt-8">
+      <table><thead>${head}</thead>
+      <tbody>${body || `<tr><td colspan="${cols}" class="empty">等待评测…</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  }
+
   function toast(message, type) {
     let wrap = document.querySelector(".toast-wrap");
     if (!wrap) { wrap = document.createElement("div"); wrap.className = "toast-wrap"; document.body.appendChild(wrap); }
@@ -209,6 +261,7 @@
 
   global.OJ = {
     api, esc, fmtTime, fmtDuration, fmtMem, verdictBadge, difficultyLabel,
+    renderSubtaskResults, renderCaseDetails,
     toast, el, openModal, confirmDialog, boot, countdown,
     setSession, logout, currentUser, isAdmin, requireAuth, goLogin,
     store,

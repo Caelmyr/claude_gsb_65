@@ -84,13 +84,12 @@
     async function viewDetail(id) {
       try {
         const s = await OJ.api("/submissions/" + id);
-        const details = (s.details || []).map(d => `
-          <tr><td class="mono">#${d.case_id}</td>
-            <td class="text-center">${OJ.verdictBadge(d.status)}</td>
-            <td class="text-center">${d.score}</td>
-            <td class="text-center mono">${OJ.fmtDuration(d.time_ms)}</td>
-            <td class="text-center mono">${OJ.fmtMem(d.memory_kb)}</td>
-            <td class="muted">${OJ.esc(d.message || "")}</td></tr>`).join("");
+        const groupNames = {};
+        (s.subtasks || []).forEach(st => { groupNames[st.id] = st.name || ("子任务 " + st.id); });
+        const groupMap = {};
+        (s.details || []).forEach(d => {
+          if (d.subtask_id != null && groupNames[d.subtask_id] != null) groupMap[d.case_id] = groupNames[d.subtask_id];
+        });
         const body = `
           <div class="stat-grid">
             <div class="stat-card"><div class="val">${OJ.verdictBadge(s.status)}</div><div class="lbl">结果</div></div>
@@ -98,10 +97,8 @@
             <div class="stat-card"><div class="val">${OJ.fmtDuration(s.time_ms)}</div><div class="lbl">耗时</div></div>
             <div class="stat-card"><div class="val">${OJ.fmtMem(s.memory_kb)}</div><div class="lbl">内存</div></div>
           </div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>测试点</th><th class="text-center">结果</th><th class="text-center">得分</th><th class="text-center">时间</th><th class="text-center">内存</th><th>信息</th></tr></thead>
-            <tbody>${details || `<tr><td colspan="6" class="empty">暂无详情</td></tr>`}</tbody>
-          </table></div>
+          ${OJ.renderSubtaskResults(s.subtasks)}
+          ${OJ.renderCaseDetails(s.details, s.subtasks && s.subtasks.length ? groupMap : null)}
           ${s.compile_message ? `<label class="mt-16">编译信息</label><pre class="code">${OJ.esc(s.compile_message)}</pre>` : ""}
           <label class="mt-16">源代码（${OJ.esc(s.language)}）</label>
           <pre class="code">${OJ.esc(s.code || "")}</pre>`;

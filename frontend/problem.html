@@ -40,6 +40,21 @@
             <pre class="code light">${OJ.esc(s.output)}</pre>
           </div>`).join("");
 
+        const subtaskCard = (p.subtasks && p.subtasks.length) ? `
+          <div class="card">
+            <div class="card-title">子任务与评分（${OJ.esc(p.points)} 分）</div>
+            <div class="hint" style="margin-bottom:8px">按子任务给部分分：同一子任务内全部测试点通过才能得到该组分数，总分等于各子任务得分之和。</div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>子任务</th><th>名称</th><th class="text-center">测试点数</th><th class="text-center">分值</th></tr></thead>
+              <tbody>${p.subtasks.map(st => `<tr>
+                <td class="mono muted">#${OJ.esc(st.id)}</td>
+                <td>${OJ.esc(st.name || "")}</td>
+                <td class="text-center">${st.case_count ?? 0}</td>
+                <td class="text-center mono">${st.points ?? 0}</td>
+              </tr>`).join("")}</tbody>
+            </table></div>
+          </div>` : "";
+
         box.innerHTML = `
           <div class="page-head">
             <div>
@@ -70,6 +85,8 @@
             <div class="card-title">样例</div>
             ${samples}
           </div>
+
+          ${subtaskCard}
 
           ${p.hint ? `<div class="card"><div class="card-title">提示</div>${renderMarkdownish(p.hint)}</div>` : ""}
 
