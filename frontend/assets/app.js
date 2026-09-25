@@ -131,6 +131,28 @@
     return `<span class="badge ${s}">${s}</span>`;
   }
 
+  /* 子任务（subtask）评测结果表：逐项展示是否通过与得分 */
+  function renderSubtaskResults(groups) {
+    if (!groups || !groups.length) return "";
+    const rows = groups.map(g => {
+      const badge = g.passed
+        ? '<span class="badge AC">通过</span>'
+        : '<span class="badge WA">未通过</span>';
+      const ids = (g.case_ids || []).map(cid => "#" + cid).join(" ");
+      return `<tr>
+        <td>${esc(g.name || ("子任务 " + g.id))} <span class="muted mono">${ids}</span></td>
+        <td class="text-center">${badge}</td>
+        <td class="text-center mono">${g.score ?? 0} / ${g.points ?? 0}</td>
+      </tr>`;
+    }).join("");
+    return `
+      <label class="mt-8" style="display:block;margin-bottom:6px">子任务得分</label>
+      <div class="table-wrap"><table>
+        <thead><tr><th>子任务（包含的测试点）</th><th class="text-center">结果</th><th class="text-center">得分</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+  }
+
   function difficultyLabel(d) {
     const names = ["", "入门", "简单", "中等", "较难", "困难"];
     const n = Number(d) || 1;
@@ -209,6 +231,7 @@
 
   global.OJ = {
     api, esc, fmtTime, fmtDuration, fmtMem, verdictBadge, difficultyLabel,
+    renderSubtaskResults,
     toast, el, openModal, confirmDialog, boot, countdown,
     setSession, logout, currentUser, isAdmin, requireAuth, goLogin,
     store,

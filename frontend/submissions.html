@@ -102,6 +102,7 @@
             <thead><tr><th>测试点</th><th class="text-center">结果</th><th class="text-center">得分</th><th class="text-center">时间</th><th class="text-center">内存</th><th>信息</th></tr></thead>
             <tbody>${details || `<tr><td colspan="6" class="empty">暂无详情</td></tr>`}</tbody>
           </table></div>
+          ${OJ.renderSubtaskResults(s.groups)}
           ${s.compile_message ? `<label class="mt-16">编译信息</label><pre class="code">${OJ.esc(s.compile_message)}</pre>` : ""}
           <label class="mt-16">源代码（${OJ.esc(s.language)}）</label>
           <pre class="code">${OJ.esc(s.code || "")}</pre>`;

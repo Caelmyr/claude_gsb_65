@@ -40,12 +40,30 @@
             <pre class="code light">${OJ.esc(s.output)}</pre>
           </div>`).join("");
 
+        const subtasks = p.subtasks || [];
+        const subtaskCard = subtasks.length ? `
+          <div class="card">
+            <div class="card-title">评分方式（按子任务给部分分）</div>
+            <div class="hint" style="margin-bottom:8px">每个子任务内的所有测试点全部通过才能得到该组分值，总分 ${OJ.esc(p.points)} 分。</div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>子任务</th><th class="text-center">包含测试点</th><th class="text-center">分值</th></tr></thead>
+              <tbody>
+                ${subtasks.map((g, i) => `<tr>
+                  <td>${OJ.esc(g.name || ("子任务 " + (i + 1)))}</td>
+                  <td class="text-center mono">${g.case_count}</td>
+                  <td class="text-center mono">${g.points}</td>
+                </tr>`).join("")}
+              </tbody>
+            </table></div>
+          </div>` : "";
+
         box.innerHTML = `
           <div class="page-head">
             <div>
               <h1>${OJ.esc(p.title)} ${OJ.difficultyLabel(p.difficulty)}</h1>
               <div class="sub">
                 时间限制 <b>${p.time_limit_ms} ms</b> · 内存限制 <b>${Math.round(p.memory_limit_kb / 1024)} MB</b> · 分值 <b>${p.points}</b>
+                ${subtasks.length ? '· 按子任务给部分分' : ""}
               </div>
             </div>
             <button class="btn btn-primary btn-lg" onclick="location.href='/editor.html?id=${OJ.esc(p.id)}'">✏️ 提交代码</button>
@@ -55,6 +73,8 @@
             <div class="card-title">题目描述</div>
             ${renderMarkdownish(p.description)}
           </div>
+
+          ${subtaskCard}
 
           <div class="card">
             <div class="card-title">输入描述</div>

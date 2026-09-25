@@ -24,6 +24,7 @@ from backend.sandbox import get_sandbox, ST_OK, ST_TLE, ST_MLE, ST_OLE, ST_RE, S
 from backend.judge import comparator
 from backend.judge import ranking
 from backend.judge import cheat
+from backend.judge import scoring
 
 
 def _submission_dir(contest_id):
@@ -123,6 +124,7 @@ class JudgeEngine:
             "judged_at": None,
             "compile_message": "",
             "details": [],
+            "groups": [],
             "similar": None,
             "ip": user.get("_ip", ""),
         }
@@ -182,11 +184,11 @@ class JudgeEngine:
         if sub is None:
             return
         problem = self._load_problem(sub["problem_id"])
-        cases = self._load_testcases(sub["problem_id"])
+        cases, subtasks = self._load_testcases(sub["problem_id"])
         contest = self._load_contest(contest_id)
 
         if problem is None:
-            self._finalize(sub_id, "SE", 0, [], "题目不存在", 0, 0)
+            self._finalize(sub_id, "SE", 0, [], "题目不存在", 0, 0, [])
             return
 
         workdir = os.path.join(config.RUNS_DIR, sub_id)
@@ -199,7 +201,7 @@ class JudgeEngine:
             sub["code"], sub["language"], workdir, config.DEFAULT_SETTINGS["judge"]["compile_timeout_ms"]
         )
         if compile_result["status"] == ST_CE:
-            self._finalize(sub_id, "CE", 0, [], compile_result["message"], 0, 0)
+            self._finalize(sub_id, "CE", 0, [], compile_result["message"], 0, 0, [])
             shutil.rmtree(workdir, ignore_errors=True)
             return
 
@@ -207,9 +209,12 @@ class JudgeEngine:
         comp_cfg = problem.get("comparison", {})
         details = []
         total_score = 0
+        group_results = []
         max_time = 0
         max_mem = 0
         final_status = "AC"
+        # 子任务模式下单个测试点不单独计分，得分只来自整组判定
+        per_case_points = not subtasks
         full_points = sum(int(c.get("points", 0)) for c in cases) or int(problem.get("points", 100))
 
         for case in cases:
@@ -230,7 +235,7 @@ class JudgeEngine:
                 msg = cmsg
                 if not ok:
                     case_status = "WA"
-                else:
+                elif per_case_points:
                     case_points = int(case.get("points", 0))
             detail = {
                 "case_id": case.get("id"),
@@ -245,12 +250,15 @@ class JudgeEngine:
             if case_status != "AC" and final_status == "AC":
                 final_status = case_status
 
-        if final_status == "AC":
+        if subtasks:
+            # 子任务模式：组内全部通过才得分，总分等于各组得分之和
+            total_score, group_results = scoring.build_group_results(subtasks, details)
+        elif final_status == "AC":
             total_score = full_points
 
         # 3) 写回
         self._finalize(sub_id, final_status, total_score, details,
-                       compile_result["message"], max_time, max_mem)
+                       compile_result["message"], max_time, max_mem, group_results)
         shutil.rmtree(workdir, ignore_errors=True)
 
         # 4) 增量更新排行榜
@@ -357,10 +365,13 @@ class JudgeEngine:
             return True, "通过（special judge）"
         return False, verdict or f"校验器异常退出码 {proc.returncode}"
 
-    def _finalize(self, sub_id, status, score, details, compile_message, time_ms, memory_kb):
+    def _finalize(self, sub_id, status, score, details, compile_message, time_ms, memory_kb, groups=None):
+        groups = groups or []
+
         def _upd(s):
             s.update(
                 status=status, score=score, details=details,
+                groups=groups,
                 compile_message=truncate(compile_message, 4000),
                 time_ms=time_ms, memory_kb=memory_kb, judged_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             )
@@ -373,7 +384,8 @@ class JudgeEngine:
             for s in self._recent:
                 if s["id"] == sub_id:
                     s.update(status=status, score=score, time_ms=time_ms,
-                             memory_kb=memory_kb, judged_at=now_iso(), details=details)
+                             memory_kb=memory_kb, judged_at=now_iso(), details=details,
+                             groups=groups)
                     break
 
     def _anti_cheat(self, sub_id):
@@ -398,7 +410,9 @@ class JudgeEngine:
 
     def _load_testcases(self, problem_id):
         data = read_json(_case_dir(problem_id))
-        return (data or {}).get("cases", []) if data else []
+        if not data:
+            return [], []
+        return data.get("cases", []), data.get("subtasks", []) or []
 
     def _load_contest(self, contest_id):
         return read_json(os.path.join(config.CONTESTS_DIR, f"{contest_id}.json"))
@@ -463,7 +477,7 @@ class JudgeEngine:
         if sub is None:
             return False
         self._update_shard(sub_id, lambda s: s.update(status="PENDING", judged_at=None,
-                                                       details=[], score=0))
+                                                       details=[], groups=[], score=0))
         self._executor.submit(self._judge_job, sub_id, sub["contest_id"], sub["user_id"])
         return True
 

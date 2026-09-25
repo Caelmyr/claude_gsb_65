@@ -118,20 +118,35 @@
     }
 
     // ---------- 管理员：题目管理 ----------
+    // 测试点编辑状态：cases[] 与 subtask 分组（每组含 name/points/case_ids）
+    let tcState = { cases: [], groups: [] };
+
     async function openProblemForm(id) {
-      let p = null, cases = [];
+      let p = null, cases = [], groups = [];
       if (id) {
         p = await OJ.api("/problems/" + id);
-        try { cases = (await OJ.api("/problems/" + id + "/testcases")).cases; } catch (e) {}
+        try {
+          const tc = await OJ.api("/problems/" + id + "/testcases");
+          cases = tc.cases || [];
+          groups = tc.subtasks || [];
+        } catch (e) {}
       }
+      tcState = {
+        cases: (cases.length ? cases : [{ input: "", output: "", points: 20 }])
+          .map((c, i) => ({ id: i + 1, input: c.input || "", output: c.output || "",
+                            points: c.points ?? 20, group: 0 })),
+        groups: groups.map((g, i) => ({
+          id: i + 1, name: g.name || ("子任务 " + (i + 1)),
+          points: g.points ?? 0,
+          case_ids: (g.case_ids || []).map(Number),
+        })),
+      };
+      // 根据已有分组回填每个测试点的所属组
+      tcState.groups.forEach(g => g.case_ids.forEach(cid => {
+        const c = tcState.cases.find(x => x.id === cid);
+        if (c) c.group = g.id;
+      }));
       const comp = (p && p.comparison) || {};
-      const caseRows = (cases.length ? cases : [{ input: "", output: "", points: 20 }]).map(c =>
-        `<div class="case-row" style="display:grid;grid-template-columns:1fr 1fr 90px 30px;gap:8px;margin-bottom:8px">
-          <textarea class="c-in" rows="2" placeholder="输入">${OJ.esc(c.input)}</textarea>
-          <textarea class="c-out" rows="2" placeholder="输出">${OJ.esc(c.output)}</textarea>
-          <input class="c-pts" type="number" value="${c.points ?? 20}" placeholder="分值">
-          <button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
-        </div>`).join("");
       const body = `
         <div class="form-row">
           <div class="form-group"><label>编号</label><input id="f_id" value="${OJ.esc(p ? p.id : "")}" placeholder="留空自动生成"></div>
@@ -143,7 +158,7 @@
           <div class="form-group"><label>内存限制 (KB)</label><input id="f_mem" type="number" value="${p ? p.memory_limit_kb : 65536}"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>分值</label><input id="f_points" type="number" value="${p ? p.points : 100}"></div>
+          <div class="form-group"><label>分值（按测试点给分时生效；划分子任务后自动等于子任务分值合计）</label><input id="f_points" type="number" value="${p ? p.points : 100}"></div>
           <div class="form-group"><label>标签（逗号分隔）</label><input id="f_tags" value="${OJ.esc(p && p.tags ? p.tags.join(",") : "")}"></div>
         </div>
         <div class="form-group"><label>题目描述</label><textarea id="f_desc" rows="3">${OJ.esc(p ? p.description : "")}</textarea></div>
@@ -161,40 +176,211 @@
             </select></div>
           <div class="form-group"><label>浮点误差限（float 模式）</label><input id="f_tol" type="number" step="0.000001" value="${comp.float_tolerance ?? 1e-6}"></div>
         </div>
-        <div class="card-title">测试用例 <button class="btn btn-outline btn-sm" onclick="addCaseRow()">＋ 添加</button></div>
-        <div id="caseList">${caseRows}</div>`;
+
+        <div class="card-title">计分方式</div>
+        <div class="hint" style="margin-bottom:8px">
+          默认「按测试点给分」：每个测试点通过即得其分值。
+          新建子任务后切换为「按子任务给分」：组内所有测试点全部通过才得到该组分值，总分等于各组得分之和。
+        </div>
+
+        <div class="card-title">子任务（可选）
+          <button class="btn btn-outline btn-sm" onclick="addSubtaskRow()">＋ 新建子任务</button>
+          <span class="hint" id="subtaskSummary"></span>
+        </div>
+        <div id="subtaskList"></div>
+
+        <div class="card-title" style="margin-top:12px">测试用例
+          <button class="btn btn-outline btn-sm" onclick="addCaseRow()">＋ 添加测试点</button>
+          <span class="hint" id="caseAssignSummary"></span>
+        </div>
+        <div id="caseList"></div>`;
       const mask = OJ.openModal(id ? "编辑题目" : "新建题目", body);
       mask.querySelector(".modal").style.maxWidth = "860px";
       mask.querySelector(".modal-actions").innerHTML = `
         <button class="btn btn-outline" onclick="this.closest('.modal-mask').remove()">取消</button>
         <button class="btn btn-primary" onclick="saveProblem('${id || ""}')">保存</button>`;
+      renderSubtasks();
+      renderCases();
+    }
+    function tcCommitCases() {
+      [...document.querySelectorAll(".case-row")].forEach((row, i) => {
+        const c = tcState.cases[i];
+        if (!c) return;
+        c.input = row.querySelector(".c-in").value;
+        c.output = row.querySelector(".c-out").value;
+        c.points = parseInt(row.querySelector(".c-pts").value, 10) || 0;
+        c.group = parseInt(row.querySelector(".c-grp").value, 10) || 0;
+      });
+    }
+
+    function groupOptions(selected) {
+      let html = `<option value="0" ${!selected ? "selected" : ""}>不分组（按测试点给分）</option>`;
+      html += tcState.groups.map(g =>
+        `<option value="${g.id}" ${selected === g.id ? "selected" : ""}>${OJ.esc(g.name)}</option>`).join("");
+      return html;
+    }
+
+    function renderCases() {
+      const box = OJ.el("caseList");
+      box.innerHTML = tcState.cases.map((c, i) => `
+        <div class="case-row" style="display:grid;grid-template-columns:1fr 1fr 80px 150px 30px;gap:8px;margin-bottom:8px">
+          <textarea class="c-in" rows="2" placeholder="输入">${OJ.esc(c.input)}</textarea>
+          <textarea class="c-out" rows="2" placeholder="输出">${OJ.esc(c.output)}</textarea>
+          <input class="c-pts" type="number" value="${c.points ?? 20}" placeholder="分值" title="按测试点给分时的分值">
+          <select class="c-grp" onchange="onCaseAssign()">${groupOptions(c.group)}</select>
+          <button class="btn btn-danger btn-sm" onclick="removeCaseRow(${i})">×</button>
+        </div>`).join("");
+      renderAssignSummary();
+      updateGroupMembers();
+    }
+
+    function renderAssignSummary() {
+      const el = OJ.el("caseAssignSummary");
+      if (!el) return;
+      if (!tcState.groups.length) { el.textContent = ""; return; }
+      const unassigned = tcState.cases.filter(c => !c.group).length;
+      el.innerHTML = unassigned
+        ? `｜<span style="color:#c0392b">还有 ${unassigned} 个测试点未归入子任务，保存会失败</span>`
+        : "｜全部测试点已归入子任务";
+    }
+
+    function renderSubtasks() {
+      const box = OJ.el("subtaskList");
+      if (!box) return;
+      if (!tcState.groups.length) {
+        box.innerHTML = '<div class="hint">未划分子任务，当前按测试点给分。</div>';
+      } else {
+        box.innerHTML = tcState.groups.map((g, i) => `
+          <div class="subtask-row" style="display:grid;grid-template-columns:1fr 90px 1fr 30px;gap:8px;margin-bottom:8px;align-items:center">
+            <input class="g-name" type="text" value="${OJ.esc(g.name)}" placeholder="子任务名称，如：简单数据">
+            <input class="g-pts" type="number" value="${g.points ?? 0}" placeholder="分值" onchange="refreshSubtaskSummary()">
+            <span class="hint g-members mono" style="font-size:12px"></span>
+            <button class="btn btn-danger btn-sm" onclick="removeSubtaskRow(${i})">×</button>
+          </div>`).join("");
+      }
+      refreshSubtaskSummary();
+    }
+
+    function refreshSubtaskSummary() {
+      const rows = [...document.querySelectorAll(".subtask-row")];
+      const total = rows.reduce((s, row) =>
+        s + (parseInt(row.querySelector(".g-pts").value, 10) || 0), 0);
+      const el = OJ.el("subtaskSummary");
+      if (!el) return;
+      if (rows.length) {
+        el.textContent = `｜共 ${rows.length} 组，合计 ${total} 分（保存后题目总分同步为 ${total}）`;
+      } else {
+        el.textContent = "";
+      }
     }
 
     function addCaseRow() {
-      const div = document.createElement("div");
-      div.className = "case-row";
-      div.style.cssText = "display:grid;grid-template-columns:1fr 1fr 90px 30px;gap:8px;margin-bottom:8px";
-      div.innerHTML = `<textarea class="c-in" rows="2" placeholder="输入"></textarea>
-        <textarea class="c-out" rows="2" placeholder="输出"></textarea>
-        <input class="c-pts" type="number" value="20" placeholder="分值">
-        <button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>`;
-      OJ.el("caseList").appendChild(div);
+      tcCommitCases();
+      tcState.cases.push({
+        id: tcState.cases.length + 1,
+        input: "", output: "", points: 20, group: 0,
+      });
+      renderCases();
+    }
+
+    function removeCaseRow(i) {
+      tcCommitCases();
+      tcState.cases.splice(i, 1);
+      // 删除后按位置重排编号，并保留各组归属关系
+      tcState.cases.forEach((c, idx) => { c.id = idx + 1; });
+      tcState.groups.forEach(g => {
+        g.case_ids = tcState.cases.filter(c => c.group === g.id).map(c => c.id);
+      });
+      renderCases();
+    }
+
+    function onCaseAssign() {
+      tcCommitCases();
+      // 重新汇总每组的 case_ids（以界面选择为唯一来源）
+      tcState.groups.forEach(g => {
+        g.case_ids = tcState.cases.filter(c => c.group === g.id).map(c => c.id);
+      });
+      refreshSubtaskSummary();
+      updateGroupMembers();
+      renderAssignSummary();
+    }
+
+    function updateGroupMembers() {
+      [...document.querySelectorAll(".subtask-row")].forEach((row, i) => {
+        const g = tcState.groups[i];
+        if (!g) return;
+        const ids = tcState.cases.filter(c => c.group === g.id).map(c => "#" + c.id);
+        row.querySelector(".g-members").textContent = ids.length
+          ? "包含测试点 " + ids.join(" ") : "⚠ 空组，保存会失败";
+      });
+    }
+
+    function addSubtaskRow() {
+      tcCommitCases();
+      collectGroupsFromDom();
+      const id = tcState.groups.length ? Math.max(...tcState.groups.map(g => g.id)) + 1 : 1;
+      tcState.groups.push({ id, name: "子任务 " + id, points: 0, case_ids: [] });
+      renderSubtasks();
+      renderCases();
+    }
+
+    function removeSubtaskRow(i) {
+      tcCommitCases();
+      collectGroupsFromDom();
+      const removed = tcState.groups.splice(i, 1)[0];
+      tcState.cases.forEach(c => { if (c.group === removed.id) c.group = 0; });
+      renderSubtasks();
+      renderCases();
+    }
+
+    function collectGroupsFromDom() {
+      // 从 DOM 读取组名/分值，case_ids 以测试点选择为准
+      [...document.querySelectorAll(".subtask-row")].forEach((row, i) => {
+        const g = tcState.groups[i];
+        if (!g) return;
+        g.name = row.querySelector(".g-name").value.trim() || ("子任务 " + (i + 1));
+        g.points = parseInt(row.querySelector(".g-pts").value, 10) || 0;
+      });
+      tcState.groups.forEach(g => {
+        g.case_ids = tcState.cases.filter(c => c.group === g.id).map(c => c.id);
+      });
     }
 
     async function saveProblem(id) {
-      const cases = [...document.querySelectorAll(".case-row")].map((r, i) => ({
-        id: i + 1,
-        input: r.querySelector(".c-in").value,
-        output: r.querySelector(".c-out").value,
-        points: parseInt(r.querySelector(".c-pts").value, 10) || 0,
+      tcCommitCases();
+      collectGroupsFromDom();
+      const useGroups = tcState.groups.length > 0;
+      if (useGroups) {
+        const unassigned = tcState.cases.filter(c => !c.group).length;
+        if (unassigned) { OJ.toast("还有 " + unassigned + " 个测试点未归入子任务", "error"); return; }
+        const empty = tcState.groups.find(g => !g.case_ids.length);
+        if (empty) { OJ.toast("子任务「" + empty.name + "」没有包含任何测试点", "error"); return; }
+      }
+      const cases = tcState.cases.map((c, i) => ({
+        id: i + 1, input: c.input, output: c.output,
+        points: parseInt(c.points, 10) || 0,
       }));
+      // 子任务按测试点在列表中的位置引用（后端同样以 1..N 编号），
+      // 避免删除中间行后出现编号空洞
+      const posOf = new Map(tcState.cases.map((c, i) => [c.id, i + 1]));
+      const subtasks = useGroups
+        ? tcState.groups.map(g => ({
+            name: g.name,
+            points: parseInt(g.points, 10) || 0,
+            case_ids: tcState.cases
+              .filter(c => c.group === g.id)
+              .map(c => posOf.get(c.id)),
+          }))
+        : [];
       const body = {
         id: OJ.el("f_id").value.trim() || undefined,
         title: OJ.el("f_title").value.trim(),
         difficulty: parseInt(OJ.el("f_diff").value, 10) || 1,
         time_limit_ms: parseInt(OJ.el("f_time").value, 10) || 1000,
         memory_limit_kb: parseInt(OJ.el("f_mem").value, 10) || 65536,
-        points: parseInt(OJ.el("f_points").value, 10) || 100,
+        points: useGroups
+          ? subtasks.reduce((s, g) => s + g.points, 0)
+          : parseInt(OJ.el("f_points").value, 10) || 100,
         tags: OJ.el("f_tags").value.split(",").map(s => s.trim()).filter(Boolean),
         description: OJ.el("f_desc").value,
         input_description: OJ.el("f_in").value,
@@ -203,6 +389,7 @@
         comparison: { mode: OJ.el("f_mode").value, float_tolerance: parseFloat(OJ.el("f_tol").value) || 1e-6, ignore_whitespace: true },
         languages: ["python", "cpp", "c", "java"],
         cases,
+        subtasks,
       };
       try {
         if (id) await OJ.api("/problems/" + id, { method: "PUT", body });
